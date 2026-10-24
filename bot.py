@@ -1,0 +1,322 @@
+import asyncio
+import json
+import os
+import queue
+import re
+import socket
+import ssl
+import sys
+import time
+import urllib.request
+import uuid
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+KLASOR = Path(__file__).parent
+if sys.stdout is None:  # pythonw ile penceresiz çalışıyorsa çıktıyı dosyaya yaz
+    sys.stdout = sys.stderr = open(KLASOR / "bot.log", "a", encoding="utf-8", buffering=1)
+
+# Aynı anda iki bot çalışıp her mesajı iki kez okumasın
+_kilit = socket.socket()
+try:
+    _kilit.bind(("127.0.0.1", 47291))
+except OSError:
+    raise SystemExit("Bot zaten çalışıyor.")
+
+import aiohttp
+import certifi
+import discord
+import miniaudio
+from discord import app_commands
+from dotenv import load_dotenv
+from edge_tts.communicate import DRM, SEC_MS_GEC_VERSION, WSS_HEADERS, WSS_URL, date_to_string
+
+load_dotenv(KLASOR / ".env")
+TOKEN = os.getenv("DISCORD_TOKEN")
+SES = "tr-TR-EmelNeural"
+GOOGLE_URL = "https://translate.google.com/translate_tts"
+MAX_UZUNLUK = 200  # Google (yedek) tek seferde en fazla 200 karakter okuyor
+YEDEK_OMRU = 20  # Microsoft boşta bekleyen bağlantıyı 25-60 sn arasında kapatıyor
+SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+KARSILAMA = "Selam, ben kişisel asistanınız. Bugün size nasıl yardımcı olabilirim?"
+EDGE_AYAR = (
+    "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
+    '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false",'
+    '"wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n'
+)
+
+
+def mesaj_izni_acik_mi() -> bool:
+    # Developer Portal'da "Message Content Intent" açık mı? Kapalıyken istersek Discord bağlantıyı reddediyor.
+    req = urllib.request.Request(
+        "https://discord.com/api/v10/applications/@me",
+        headers={"Authorization": f"Bot {TOKEN}", "User-Agent": "DiscordBot (tts-bot, 1)"},
+    )
+    flags = json.load(urllib.request.urlopen(req))["flags"]
+    return bool(flags & (1 << 18 | 1 << 19))
+
+
+intents = discord.Intents.default()
+intents.message_content = bool(TOKEN) and mesaj_izni_acik_mi()
+if not intents.message_content:
+    print("UYARI: Message Content Intent kapalı, yazılanları okuyamam. Portal'dan açıp kaydet, botu yeniden başlat.")
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
+http: aiohttp.ClientSession
+
+okuma_kanali: dict[int, int] = {}  # sunucu id -> okunacak yazı kanalı id
+kuyruklar: dict[int, asyncio.Queue] = {}  # sunucu başına sırayla okumak için
+
+
+def temizle(metin: str) -> str:
+    metin = re.sub(r"https?://\S+", "link", metin)
+    metin = re.sub(r"<a?:(\w+):\d+>", r"\1", metin)  # özel emojiler -> adı
+    return metin.strip()[:MAX_UZUNLUK]
+
+
+async def edge_baglan() -> aiohttp.ClientWebSocketResponse:
+    return await http.ws_connect(
+        f"{WSS_URL}&ConnectionId={uuid.uuid4().hex}&Sec-MS-GEC={DRM.generate_sec_ms_gec()}"
+        f"&Sec-MS-GEC-Version={SEC_MS_GEC_VERSION}",
+        compress=15,
+        headers=DRM.headers_with_muid(WSS_HEADERS),
+        ssl=SSL_CTX,
+    )
+
+
+async def kapat(gorev: asyncio.Task):
+    try:
+        await (await gorev).close()
+    except Exception:
+        pass
+
+
+class EdgeYedek:
+    # Microsoft'a bağlanmak ~0.8 sn sürüyor: bir bağlantıyı önceden açık tutup mesaj gelince hazır kullanıyoruz
+    def __init__(self):
+        self.gorev: asyncio.Task | None = None
+        self.acilis = 0.0
+
+    def tazele(self):
+        if self.gorev:
+            asyncio.create_task(kapat(self.gorev))
+        self.gorev = asyncio.create_task(edge_baglan())
+        self.acilis = time.monotonic()
+
+    def bayat(self) -> bool:
+        return self.gorev is None or time.monotonic() - self.acilis > YEDEK_OMRU
+
+    def birak(self):
+        if self.gorev:
+            asyncio.create_task(kapat(self.gorev))
+        self.gorev = None
+
+    async def al(self) -> aiohttp.ClientWebSocketResponse:
+        if self.bayat():
+            self.tazele()
+        gorev, self.gorev = self.gorev, None
+        self.tazele()  # sıradaki mesaj için yenisini hemen aç
+        return await gorev
+
+
+yedek = EdgeYedek()
+
+
+async def yedegi_sicak_tut():
+    while True:
+        await asyncio.sleep(2)
+        if not client.voice_clients:
+            yedek.birak()
+        elif yedek.bayat():
+            yedek.tazele()
+
+
+class ParcaKaynagi(miniaudio.StreamableSource):
+    # Ağdan parça parça gelen mp3. Discord'un ses thread'i okurken veri gelmediyse gelene kadar bekler.
+    def __init__(self):
+        self.kuyruk: queue.Queue[bytes | None] = queue.Queue()
+        self.tampon = b""
+        self.bitti = False
+        self.geldi = False
+
+    def ekle(self, veri: bytes | None):
+        self.geldi = self.geldi or bool(veri)
+        self.kuyruk.put(veri)
+
+    def read(self, n: int) -> bytes:
+        while not self.tampon and not self.bitti:
+            parca = self.kuyruk.get()
+            if parca is None:
+                self.bitti = True
+            else:
+                self.tampon += parca
+        cikti, self.tampon = self.tampon[:n], self.tampon[n:]
+        return cikti
+
+
+class AkisSesi(discord.AudioSource):
+    # mp3'ü geldikçe Discord'un istediği 20 ms'lik 48 kHz stereo PCM parçalara çözer
+    CERCEVE = 3840
+
+    def __init__(self, kaynak: ParcaKaynagi):
+        self.kaynak = kaynak
+        self.akis = None
+        self.tampon = b""
+
+    def read(self) -> bytes:
+        if self.akis is None:
+            # Çözücü açılırken veri bekliyor; bu yüzden event loop'ta değil burada (ses thread'inde) açılmalı
+            self.akis = miniaudio.stream_any(
+                self.kaynak,
+                source_format=miniaudio.FileFormat.MP3,
+                output_format=miniaudio.SampleFormat.SIGNED16,
+                nchannels=2,
+                sample_rate=48000,
+                frames_to_read=960,
+            )
+        while len(self.tampon) < self.CERCEVE:
+            parca = next(self.akis, None)
+            if parca is None:
+                if not self.tampon:
+                    return b""
+                self.tampon = self.tampon.ljust(self.CERCEVE, b"\0")
+                break
+            self.tampon += parca.tobytes()
+        cerceve, self.tampon = self.tampon[: self.CERCEVE], self.tampon[self.CERCEVE :]
+        return cerceve
+
+
+async def edge_akit(metin: str, kaynak: ParcaKaynagi):
+    ws = await yedek.al()
+    try:
+        ssml = (
+            f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='tr-TR'><voice name='{SES}'>"
+            f"<prosody pitch='+0Hz' rate='+0%' volume='+0%'>{escape(metin)}</prosody></voice></speak>"
+        )
+        await ws.send_str(f"X-Timestamp:{date_to_string()}\r\n{EDGE_AYAR}")
+        await ws.send_str(
+            f"X-RequestId:{uuid.uuid4().hex}\r\nContent-Type:application/ssml+xml\r\n"
+            f"X-Timestamp:{date_to_string()}Z\r\nPath:ssml\r\n\r\n{ssml}"
+        )
+        async for m in ws:
+            if m.type == aiohttp.WSMsgType.TEXT and "Path:turn.end" in m.data:
+                break
+            if m.type == aiohttp.WSMsgType.BINARY:
+                baslik = int.from_bytes(m.data[:2], "big")
+                kaynak.ekle(m.data[baslik + 2 :])
+        if not kaynak.geldi:
+            raise RuntimeError(f"Edge ses göndermedi (kod {ws.close_code})")
+    finally:
+        await ws.close()
+
+
+async def google_mp3(metin: str) -> bytes:
+    params = {"ie": "UTF-8", "q": metin, "tl": "tr", "client": "tw-ob"}
+    async with http.get(GOOGLE_URL, params=params) as r:
+        r.raise_for_status()
+        return await r.read()
+
+
+async def ses_uret(metin: str, kaynak: ParcaKaynagi):
+    try:
+        await asyncio.wait_for(edge_akit(metin, kaynak), 10)
+    except Exception as e:
+        if kaynak.geldi:
+            print(f"Edge yarıda kesildi: {e!r}")
+        else:
+            print(f"Edge olmadı, Google'a geçiliyor: {e!r}")
+            try:
+                kaynak.ekle(await google_mp3(metin))
+            except Exception as e2:
+                print(f"Google da olmadı: {e2!r}")
+    finally:
+        kaynak.ekle(None)
+
+
+def seslendir(guild: discord.Guild, metin: str):
+    metin = temizle(metin)
+    if not metin:
+        return
+    # Ses hemen üretilmeye başlar (önceki mesaj çalarken bile), çalma sırası korunur
+    kaynak = ParcaKaynagi()
+    asyncio.create_task(ses_uret(metin, kaynak))
+    if guild.id not in kuyruklar:
+        kuyruklar[guild.id] = asyncio.Queue()
+        asyncio.create_task(oynatici(guild, kuyruklar[guild.id]))
+    kuyruklar[guild.id].put_nowait(kaynak)
+
+
+async def oynatici(guild: discord.Guild, kuyruk: asyncio.Queue):
+    while True:
+        kaynak = await kuyruk.get()
+        try:
+            vc = guild.voice_client
+            if not vc or not vc.is_connected():
+                continue
+            bitti = asyncio.Event()
+            vc.play(AkisSesi(kaynak), after=lambda _: client.loop.call_soon_threadsafe(bitti.set))
+            await bitti.wait()
+        except Exception as e:
+            print(f"Seslendirme hatası: {e}")
+
+
+@client.event
+async def setup_hook():
+    global http
+    http = aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"})
+    asyncio.create_task(yedegi_sicak_tut())
+    await tree.sync()
+
+
+@client.event
+async def on_ready():
+    print(f"{client.user} olarak giriş yapıldı.")
+
+
+@tree.command(name="gel", description="Bulunduğun ses kanalına gelir, bu kanaldaki mesajları okur")
+async def gel(interaction: discord.Interaction):
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        return await interaction.response.send_message("Önce bir ses kanalına gir.", ephemeral=True)
+    kanal = interaction.user.voice.channel
+    if yedek.bayat():
+        yedek.tazele()  # ses kanalına bağlanırken Microsoft bağlantısı da hazırlansın
+    vc = interaction.guild.voice_client
+    if vc:
+        await vc.move_to(kanal)
+    else:
+        await kanal.connect()
+    okuma_kanali[interaction.guild_id] = interaction.channel_id
+    await interaction.response.send_message(f"**{kanal.name}** kanalındayım, bu kanala yazılanları okuyacağım.")
+    seslendir(interaction.guild, KARSILAMA)
+
+
+@tree.command(name="git", description="Ses kanalından çıkar")
+async def git(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if not vc:
+        return await interaction.response.send_message("Zaten bir ses kanalında değilim.", ephemeral=True)
+    await vc.disconnect()
+    okuma_kanali.pop(interaction.guild_id, None)
+    await interaction.response.send_message("Görüşürüz 👋")
+
+
+@client.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        return
+    if okuma_kanali.get(message.guild.id) == message.channel.id and message.guild.voice_client:
+        seslendir(message.guild, message.clean_content)
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    # Kanalda bottan başka kimse kalmadıysa çık
+    vc = member.guild.voice_client
+    if vc and len([m for m in vc.channel.members if not m.bot]) == 0:
+        await vc.disconnect()
+        okuma_kanali.pop(member.guild.id, None)
+
+
+if not TOKEN:
+    raise SystemExit(".env dosyasında DISCORD_TOKEN yok.")
+client.run(TOKEN)

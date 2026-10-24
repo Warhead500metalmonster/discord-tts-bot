@@ -280,13 +280,19 @@ async def gel(interaction: discord.Interaction):
     kanal = interaction.user.voice.channel
     if yedek.bayat():
         yedek.tazele()  # ses kanalına bağlanırken Microsoft bağlantısı da hazırlansın
+    # Ses bağlantısı Discord'un 3 saniyelik cevap süresini aşabiliyor; önce "düşünüyor..." diye cevap ver
+    await interaction.response.defer()
     vc = interaction.guild.voice_client
-    if vc:
-        await vc.move_to(kanal)
-    else:
-        await kanal.connect()
+    try:
+        if vc:
+            await vc.move_to(kanal)
+        else:
+            await kanal.connect(timeout=20, reconnect=False)
+    except Exception as e:
+        print(f"Ses kanalına bağlanamadım: {e!r}")
+        return await interaction.followup.send(f"Ses kanalına bağlanamadım: `{e!r}`")
     okuma_kanali[interaction.guild_id] = interaction.channel_id
-    await interaction.response.send_message(f"**{kanal.name}** kanalındayım, bu kanala yazılanları okuyacağım.")
+    await interaction.followup.send(f"**{kanal.name}** kanalındayım, bu kanala yazılanları okuyacağım.")
     seslendir(interaction.guild, KARSILAMA)
 
 

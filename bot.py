@@ -34,7 +34,11 @@ from edge_tts.communicate import DRM, SEC_MS_GEC_VERSION, WSS_HEADERS, WSS_URL, 
 load_dotenv(KLASOR / ".env")
 TOKEN = os.getenv("DISCORD_TOKEN")
 ELEVEN_KEY = os.getenv("ELEVENLABS_API_KEY")
-ELEVEN_MODEL = "eleven_flash_v2_5"  # en hızlısı (~0.3 sn), karakter başına yarım kredi
+# /mode komutundaki seçenekler: ad -> ElevenLabs modeli. İlki varsayılan.
+ELEVEN_MODLAR = {
+    "Duygulu (v3)": "eleven_v3",  # sitedeki gibi duygulu, ilk ses ~0.8 sn, 2 kat kredi
+    "Hızlı (Flash)": "eleven_flash_v2_5",  # düz ama ilk ses ~0.2 sn
+}
 # /voice komutunda çıkan ElevenLabs sesleri: ad -> voice_id. Türkçe ses eklemek için buraya satır ekle.
 ELEVEN_SESLER = {
     "Sarah (kadın)": "EXAVITQu4vr4xnSDxMaL",
@@ -90,6 +94,7 @@ http: aiohttp.ClientSession
 okuma_kanali: dict[int, int] = {}  # sunucu id -> okunacak yazı kanalı id
 kuyruklar: dict[int, asyncio.Queue] = {}  # sunucu başına sırayla okumak için
 ses_secimi: dict[int, str] = {}  # sunucu id -> /voice ile seçilen ses adı
+mod_secimi: dict[int, str] = {}  # sunucu id -> /mode ile seçilen ElevenLabs modeli
 eleven_kapali_kadar = 0.0  # kredi biterse ElevenLabs bir süre denenmesin
 eleven_sira = asyncio.Semaphore(ELEVEN_AYNI_ANDA)
 
@@ -258,13 +263,13 @@ async def edge_akit(metin: str, kaynak: ParcaKaynagi):
         await ws.close()
 
 
-async def eleven_akit(metin: str, voice_id: str, kaynak: ParcaKaynagi):
+async def eleven_akit(metin: str, voice_id: str, model: str, kaynak: ParcaKaynagi):
     global eleven_kapali_kadar
     async with eleven_sira, http.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
         params={"output_format": "mp3_44100_128"},
         headers={"xi-api-key": ELEVEN_KEY},
-        json={"text": metin, "model_id": ELEVEN_MODEL, "language_code": "tr"},
+        json={"text": metin, "model_id": model, "language_code": "tr"},
     ) as r:
         if r.status != 200:
             hata = (await r.text())[:300]
@@ -282,12 +287,12 @@ async def google_akit(metin: str, kaynak: ParcaKaynagi):
         kaynak.ekle(await r.read())
 
 
-async def ses_uret(metin: str, ses: str, kaynak: ParcaKaynagi):
+async def ses_uret(metin: str, ses: str, model: str, kaynak: ParcaKaynagi):
     # Seçilen ses olmazsa sıradakine geç: ElevenLabs -> Emel (Microsoft) -> Google
     denemeler = []
     kisa = len(metin) <= ELEVEN_UZUNLUK
     if ses in ELEVEN_SESLER and ELEVEN_KEY and kisa and time.monotonic() > eleven_kapali_kadar:
-        denemeler.append(("ElevenLabs", eleven_akit(metin, ELEVEN_SESLER[ses], kaynak)))
+        denemeler.append(("ElevenLabs", eleven_akit(metin, ELEVEN_SESLER[ses], model, kaynak)))
     denemeler += [("Edge", edge_akit(metin, kaynak)), ("Google", google_akit(metin, kaynak))]
     try:
         for i, (ad, deneme) in enumerate(denemeler):
@@ -321,7 +326,9 @@ def seslendir(guild: discord.Guild, metin: str):
         return
     # Ses hemen üretilmeye başlar (önceki mesaj çalarken bile), çalma sırası korunur
     kaynak = ParcaKaynagi()
-    asyncio.create_task(ses_uret(metin, ses_secimi.get(guild.id, VARSAYILAN_SES), kaynak))
+    ses = ses_secimi.get(guild.id, VARSAYILAN_SES)
+    model = ELEVEN_MODLAR[mod_secimi.get(guild.id, next(iter(ELEVEN_MODLAR)))]
+    asyncio.create_task(ses_uret(metin, ses, model, kaynak))
     if guild.id not in kuyruklar:
         kuyruklar[guild.id] = asyncio.Queue()
         asyncio.create_task(oynatici(guild, kuyruklar[guild.id]))
@@ -395,6 +402,13 @@ async def ses(interaction: discord.Interaction, ad: app_commands.Choice[str]):
         return await interaction.response.send_message("ElevenLabs anahtarı tanımlı değil.", ephemeral=True)
     ses_secimi[interaction.guild_id] = ad.value
     await interaction.response.send_message(f"Ses değişti: **{ad.value}**")
+
+
+@tree.command(name="mode", description="ElevenLabs okuma modunu değiştirir: duygulu ya da hızlı")
+@app_commands.choices(ad=[app_commands.Choice(name=ad, value=ad) for ad in ELEVEN_MODLAR])
+async def mode(interaction: discord.Interaction, ad: app_commands.Choice[str]):
+    mod_secimi[interaction.guild_id] = ad.value
+    await interaction.response.send_message(f"Mod değişti: **{ad.value}**")
 
 
 @tree.command(name="skip", description="Şu an okunan mesajı keser, sıradakine geçer")

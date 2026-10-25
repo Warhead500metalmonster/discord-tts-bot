@@ -39,6 +39,8 @@ ELEVEN_MODEL = "eleven_flash_v2_5"  # en hızlısı (~0.3 sn), karakter başına
 ELEVEN_SESLER = {
     "Sarah (kadın)": "EXAVITQu4vr4xnSDxMaL",
     "George (erkek)": "JBFqnCBsd6RMkjVDRZzb",
+    "Anıl": "KxYUuDOuV6OvSseupTEh",
+    "Nygma": "8hS2NaV5RsaEqrmomWSw",  # kütüphane sesi: ücretli plan gerektirir
 }
 EMEL = "Emel (Microsoft, bedava)"
 VARSAYILAN_SES = next(iter(ELEVEN_SESLER)) if ELEVEN_KEY else EMEL
@@ -46,7 +48,7 @@ SES = "tr-TR-EmelNeural"
 GOOGLE_URL = "https://translate.google.com/translate_tts"
 MAX_UZUNLUK = 1000  # bir mesajdan okunacak en fazla karakter (uzun mesajlar ElevenLabs kredisini hızlı bitirir)
 GOOGLE_UZUNLUK = 200  # Google (son yedek) tek seferde en fazla 200 karakter okuyor
-ELEVEN_AYNI_ANDA = 2  # ElevenLabs ücretsiz plan aynı anda en fazla 2 isteğe izin veriyor
+ELEVEN_AYNI_ANDA = 3  # ElevenLabs aynı anda istek sınırı: ücretsiz 2, Starter 3
 ELEVEN_UZUNLUK = 300  # bundan uzun mesajlar kredi harcamasın diye Emel'le okunur
 EMOJI = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002300-\U000023FF\U00002B00-\U00002BFF"

@@ -44,7 +44,9 @@ EMEL = "Emel (Microsoft, bedava)"
 VARSAYILAN_SES = next(iter(ELEVEN_SESLER)) if ELEVEN_KEY else EMEL
 SES = "tr-TR-EmelNeural"
 GOOGLE_URL = "https://translate.google.com/translate_tts"
-MAX_UZUNLUK = 200  # Google (yedek) tek seferde en fazla 200 karakter okuyor
+MAX_UZUNLUK = 1000  # bir mesajdan okunacak en fazla karakter (uzun mesajlar ElevenLabs kredisini hızlı bitirir)
+GOOGLE_UZUNLUK = 200  # Google (son yedek) tek seferde en fazla 200 karakter okuyor
+ELEVEN_AYNI_ANDA = 2  # ElevenLabs ücretsiz plan aynı anda en fazla 2 isteğe izin veriyor
 YEDEK_OMRU = 20  # Microsoft boşta bekleyen bağlantıyı 25-60 sn arasında kapatıyor
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 KARSILAMA = "Selam, ben kişisel asistanınız. Bugün size nasıl yardımcı olabilirim?"
@@ -77,12 +79,20 @@ okuma_kanali: dict[int, int] = {}  # sunucu id -> okunacak yazı kanalı id
 kuyruklar: dict[int, asyncio.Queue] = {}  # sunucu başına sırayla okumak için
 ses_secimi: dict[int, str] = {}  # sunucu id -> /ses ile seçilen ses adı
 eleven_kapali_kadar = 0.0  # kredi biterse ElevenLabs bir süre denenmesin
+eleven_sira = asyncio.Semaphore(ELEVEN_AYNI_ANDA)
 
 
 def temizle(metin: str) -> str:
     metin = re.sub(r"https?://\S+", "link", metin)
     metin = re.sub(r"<a?:(\w+):\d+>", r"\1", metin)  # özel emojiler -> adı
-    return metin.strip()[:MAX_UZUNLUK]
+    return kirp(metin.strip(), MAX_UZUNLUK)
+
+
+def kirp(metin: str, uzunluk: int) -> str:
+    # Sınırı aşarsa kelimenin ortasında değil, son boşlukta kes
+    if len(metin) <= uzunluk:
+        return metin
+    return metin[:uzunluk].rsplit(" ", 1)[0]
 
 
 async def edge_baglan() -> aiohttp.ClientWebSocketResponse:
@@ -159,9 +169,12 @@ class ParcaKaynagi(miniaudio.StreamableSource):
         self.tampon = b""
         self.bitti = False
         self.geldi = False
+        self.ilk_parca = asyncio.Event()
 
     def ekle(self, veri: bytes | None):
-        self.geldi = self.geldi or bool(veri)
+        if veri:
+            self.geldi = True
+            self.ilk_parca.set()
         self.kuyruk.put(veri)
 
     def read(self, n: int) -> bytes:
@@ -233,7 +246,7 @@ async def edge_akit(metin: str, kaynak: ParcaKaynagi):
 
 async def eleven_akit(metin: str, voice_id: str, kaynak: ParcaKaynagi):
     global eleven_kapali_kadar
-    async with http.post(
+    async with eleven_sira, http.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
         params={"output_format": "mp3_44100_128"},
         headers={"xi-api-key": ELEVEN_KEY},
@@ -241,7 +254,7 @@ async def eleven_akit(metin: str, voice_id: str, kaynak: ParcaKaynagi):
     ) as r:
         if r.status != 200:
             hata = (await r.text())[:300]
-            if r.status in (401, 402, 429):  # kredi bitti / yetki yok / sınır: 10 dk Edge ile devam et
+            if r.status in (401, 402):  # kredi bitti / anahtar geçersiz: 10 dk Emel ile devam et
                 eleven_kapali_kadar = time.monotonic() + 600
             raise RuntimeError(f"ElevenLabs {r.status}: {hata}")
         async for parca in r.content.iter_any():
@@ -249,7 +262,7 @@ async def eleven_akit(metin: str, voice_id: str, kaynak: ParcaKaynagi):
 
 
 async def google_akit(metin: str, kaynak: ParcaKaynagi):
-    params = {"ie": "UTF-8", "q": metin, "tl": "tr", "client": "tw-ob"}
+    params = {"ie": "UTF-8", "q": kirp(metin, GOOGLE_UZUNLUK), "tl": "tr", "client": "tw-ob"}
     async with http.get(GOOGLE_URL, params=params) as r:
         r.raise_for_status()
         kaynak.ekle(await r.read())
@@ -264,7 +277,15 @@ async def ses_uret(metin: str, ses: str, kaynak: ParcaKaynagi):
     try:
         for i, (ad, deneme) in enumerate(denemeler):
             try:
-                await asyncio.wait_for(deneme, 10)
+                # İlk ses 10 sn içinde gelmezse sıradakine geç; geldiyse uzun metnin bitmesini bekle
+                gorev = asyncio.ensure_future(deneme)
+                ilk = asyncio.ensure_future(kaynak.ilk_parca.wait())
+                await asyncio.wait({gorev, ilk}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+                ilk.cancel()
+                if not kaynak.geldi and not gorev.done():
+                    gorev.cancel()
+                    raise TimeoutError("10 sn içinde ses gelmedi")
+                await asyncio.wait_for(gorev, 120)
                 if kaynak.geldi:
                     break
                 raise RuntimeError("ses gelmedi")

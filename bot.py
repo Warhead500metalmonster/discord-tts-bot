@@ -41,6 +41,7 @@ ELEVEN_SESLER = {
     "George (erkek)": "JBFqnCBsd6RMkjVDRZzb",
     "Anıl": "KxYUuDOuV6OvSseupTEh",
     "Nygma": "8hS2NaV5RsaEqrmomWSw",  # kütüphane sesi: ücretli plan gerektirir
+    "Şevki": "MoAl27wTQMGQ63UoHoKO",
 }
 EMEL = "Emel (Microsoft, bedava)"
 VARSAYILAN_SES = next(iter(ELEVEN_SESLER)) if ELEVEN_KEY else EMEL

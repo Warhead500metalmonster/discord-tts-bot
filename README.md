@@ -17,7 +17,8 @@ Ses kanalına gelip, çağrıldığı yazı kanalına yazılan mesajları Türk�
 |---|---|
 | `/join` | Bulunduğun ses kanalına gelir, komutu yazdığın kanala yazılanları okur |
 | `/leave` | Ses kanalından çıkar |
-| `/voice` | Okuma sesini değiştirir |
+| `/voice` | Okuma sesini değiştirir (sunucunun sesi) |
+| `/myvoice` | Senin mesajlarının hangi sesle okunacağını seçer; bot yeniden başlasa da hatırlanır |
 | `/mode` | ElevenLabs modunu seçer: Duygulu (v3, varsayılan) ya da Hızlı (Flash) |
 | `/skip` | Şu an okunan mesajı keser, sıradakine geçer |
 

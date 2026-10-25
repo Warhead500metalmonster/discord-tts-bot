@@ -96,6 +96,11 @@ okuma_kanali: dict[int, int] = {}  # sunucu id -> okunacak yazı kanalı id
 kuyruklar: dict[int, asyncio.Queue] = {}  # sunucu başına sırayla okumak için
 ses_secimi: dict[int, str] = {}  # sunucu id -> /voice ile seçilen ses adı
 mod_secimi: dict[int, str] = {}  # sunucu id -> /mode ile seçilen ElevenLabs modeli
+KISI_SESLERI_DOSYASI = KLASOR / "kisi_sesleri.json"
+try:  # kullanıcı id -> /myvoice ile seçtiği ses; bot yeniden başlasa da kalsın diye dosyada
+    kisi_sesleri: dict[int, str] = {int(k): v for k, v in json.loads(KISI_SESLERI_DOSYASI.read_text("utf-8")).items()}
+except (OSError, ValueError):
+    kisi_sesleri = {}
 eleven_kapali_kadar = 0.0  # kredi biterse ElevenLabs bir süre denenmesin
 eleven_sira = asyncio.Semaphore(ELEVEN_AYNI_ANDA)
 
@@ -321,13 +326,16 @@ async def ses_uret(metin: str, ses: str, model: str, kaynak: ParcaKaynagi):
         kaynak.ekle(None)
 
 
-def seslendir(guild: discord.Guild, metin: str):
+def seslendir(guild: discord.Guild, metin: str, kisi_id: int | None = None):
     metin = temizle(metin)
     if not metin:
         return
     # Ses hemen üretilmeye başlar (önceki mesaj çalarken bile), çalma sırası korunur
     kaynak = ParcaKaynagi()
-    ses = ses_secimi.get(guild.id, VARSAYILAN_SES)
+    # Önce kişinin kendi sesi, yoksa sunucunun /voice ile seçtiği ses
+    ses = kisi_sesleri.get(kisi_id) or ses_secimi.get(guild.id, VARSAYILAN_SES)
+    if ses not in ELEVEN_SESLER and ses != EMEL:  # listeden kaldırılmış bir ses kaydı kalmışsa
+        ses = ses_secimi.get(guild.id, VARSAYILAN_SES)
     model = ELEVEN_MODLAR[mod_secimi.get(guild.id, next(iter(ELEVEN_MODLAR)))]
     asyncio.create_task(ses_uret(metin, ses, model, kaynak))
     if guild.id not in kuyruklar:
@@ -405,6 +413,27 @@ async def ses(interaction: discord.Interaction, ad: app_commands.Choice[str]):
     await interaction.response.send_message(f"Ses değişti: **{ad.value}**")
 
 
+SUNUCU_SESI = "Sunucunun sesi (kendi sesimi kaldır)"
+
+
+@tree.command(name="myvoice", description="Senin mesajların hangi sesle okunsun (sadece senin için)")
+@app_commands.choices(ad=[app_commands.Choice(name=ad, value=ad) for ad in [*ELEVEN_SESLER, EMEL, SUNUCU_SESI]])
+async def myvoice(interaction: discord.Interaction, ad: app_commands.Choice[str]):
+    if ad.value in ELEVEN_SESLER and not ELEVEN_KEY:
+        return await interaction.response.send_message("ElevenLabs anahtarı tanımlı değil.", ephemeral=True)
+    if ad.value == SUNUCU_SESI:
+        kisi_sesleri.pop(interaction.user.id, None)
+        cevap = "Artık mesajların sunucunun sesiyle okunacak."
+    else:
+        kisi_sesleri[interaction.user.id] = ad.value
+        cevap = f"{interaction.user.display_name} artık **{ad.value}** sesiyle okunacak."
+    try:
+        KISI_SESLERI_DOSYASI.write_text(json.dumps(kisi_sesleri, ensure_ascii=False), "utf-8")
+    except OSError as e:
+        print(f"Kişi sesleri kaydedilemedi: {e!r}")
+    await interaction.response.send_message(cevap)
+
+
 @tree.command(name="mode", description="ElevenLabs okuma modunu değiştirir: duygulu ya da hızlı")
 @app_commands.choices(ad=[app_commands.Choice(name=ad, value=ad) for ad in ELEVEN_MODLAR])
 async def mode(interaction: discord.Interaction, ad: app_commands.Choice[str]):
@@ -434,7 +463,7 @@ async def on_message(message: discord.Message):
         if message.attachments:  # resim, video, ses, belge...
             metin = f"{metin} dosya geldi"
         metin = SABIT_CUMLELER.get(message.author.id, metin)
-        seslendir(message.guild, metin)
+        seslendir(message.guild, metin, message.author.id)
 
 
 @client.event

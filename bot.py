@@ -47,6 +47,11 @@ GOOGLE_URL = "https://translate.google.com/translate_tts"
 MAX_UZUNLUK = 1000  # bir mesajdan okunacak en fazla karakter (uzun mesajlar ElevenLabs kredisini hızlı bitirir)
 GOOGLE_UZUNLUK = 200  # Google (son yedek) tek seferde en fazla 200 karakter okuyor
 ELEVEN_AYNI_ANDA = 2  # ElevenLabs ücretsiz plan aynı anda en fazla 2 isteğe izin veriyor
+ELEVEN_UZUNLUK = 300  # bundan uzun mesajlar kredi harcamasın diye Emel'le okunur
+EMOJI = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002300-\U000023FF\U00002B00-\U00002BFF"
+    "\U0000FE0F\U0000200D\U000020E3\U00003030\U0000303D\U00003297\U00003299]+"
+)
 YEDEK_OMRU = 20  # Microsoft boşta bekleyen bağlantıyı 25-60 sn arasında kapatıyor
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 KARSILAMA = "Selam, ben kişisel asistanınız. Bugün size nasıl yardımcı olabilirim?"
@@ -84,7 +89,9 @@ eleven_sira = asyncio.Semaphore(ELEVEN_AYNI_ANDA)
 
 def temizle(metin: str) -> str:
     metin = re.sub(r"https?://\S+", "link geldi", metin)
-    metin = re.sub(r"<a?:(\w+):\d+>", r"\1", metin)  # özel emojiler -> adı
+    metin = re.sub(r"<a?:\w+:\d+>", " ", metin)  # sunucunun özel emojileri
+    metin = EMOJI.sub(" ", metin)  # normal emojiler
+    metin = re.sub(r"\s+", " ", metin)
     return kirp(metin.strip(), MAX_UZUNLUK)
 
 
@@ -271,7 +278,8 @@ async def google_akit(metin: str, kaynak: ParcaKaynagi):
 async def ses_uret(metin: str, ses: str, kaynak: ParcaKaynagi):
     # Seçilen ses olmazsa sıradakine geç: ElevenLabs -> Emel (Microsoft) -> Google
     denemeler = []
-    if ses in ELEVEN_SESLER and ELEVEN_KEY and time.monotonic() > eleven_kapali_kadar:
+    kisa = len(metin) <= ELEVEN_UZUNLUK
+    if ses in ELEVEN_SESLER and ELEVEN_KEY and kisa and time.monotonic() > eleven_kapali_kadar:
         denemeler.append(("ElevenLabs", eleven_akit(metin, ELEVEN_SESLER[ses], kaynak)))
     denemeler += [("Edge", edge_akit(metin, kaynak)), ("Google", google_akit(metin, kaynak))]
     try:
@@ -382,11 +390,24 @@ async def ses(interaction: discord.Interaction, ad: app_commands.Choice[str]):
     await interaction.response.send_message(f"Ses değişti: **{ad.value}**")
 
 
+@tree.command(name="skip", description="Şu an okunan mesajı keser, sıradakine geçer")
+async def skip(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_playing():
+        return await interaction.response.send_message("Şu an bir şey okumuyorum.", ephemeral=True)
+    vc.stop()  # oynatıcı "bitti" sanıp kuyruktaki sıradaki mesaja geçer
+    await interaction.response.send_message("Geçildi.")
+
+
 @client.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
-    if okuma_kanali.get(message.guild.id) == message.channel.id and message.guild.voice_client:
+    vc = message.guild.voice_client
+    if okuma_kanali.get(message.guild.id) == message.channel.id and vc:
+        # Sadece botla aynı ses kanalında olanların yazdıkları okunur
+        if not message.author.voice or message.author.voice.channel != vc.channel:
+            return
         metin = message.clean_content
         if message.attachments:  # resim, video, ses, belge...
             metin = f"{metin} dosya geldi"

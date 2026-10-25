@@ -6,7 +6,9 @@ Ses kanalına gelip, çağrıldığı yazı kanalına yazılan mesajları Türk�
 - Seçilen ses olmazsa (kredi biterse vs.) sırayla Emel'e, o da olmazsa Google sesine geçer.
 - ElevenLabs sesleri `bot.py` içindeki `ELEVEN_SESLER` listesinden gelir; yeni ses için oraya `"Ad": "voice_id"` ekle.
 - Yazılan mesaj ~0,3 saniyede okunmaya başlar (bağlantı önceden açık tutulur, ses parça parça çalınır).
-- Linkler "link" diye, özel emojiler adıyla okunur. En fazla 200 karakter okunur.
+- Sadece botla aynı ses kanalında olanların yazdıkları okunur.
+- Linkler "link geldi", dosyalar "dosya geldi" diye okunur; emojiler atlanır. Bir mesajdan en fazla 1000 karakter okunur.
+- 300 karakterden uzun mesajlar ElevenLabs kredisi harcamasın diye Emel'le okunur.
 - Kanalda kimse kalmayınca bot kendiliğinden çıkar.
 
 ## Komutlar
@@ -16,6 +18,7 @@ Ses kanalına gelip, çağrıldığı yazı kanalına yazılan mesajları Türk�
 | `/join` | Bulunduğun ses kanalına gelir, komutu yazdığın kanala yazılanları okur |
 | `/leave` | Ses kanalından çıkar |
 | `/voice` | Okuma sesini değiştirir |
+| `/skip` | Şu an okunan mesajı keser, sıradakine geçer |
 
 ## Kurulum (Windows)
 

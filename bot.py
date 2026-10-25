@@ -33,6 +33,15 @@ from edge_tts.communicate import DRM, SEC_MS_GEC_VERSION, WSS_HEADERS, WSS_URL, 
 
 load_dotenv(KLASOR / ".env")
 TOKEN = os.getenv("DISCORD_TOKEN")
+ELEVEN_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVEN_MODEL = "eleven_flash_v2_5"  # en hızlısı (~0.3 sn), karakter başına yarım kredi
+# /ses komutunda çıkan ElevenLabs sesleri: ad -> voice_id. Türkçe ses eklemek için buraya satır ekle.
+ELEVEN_SESLER = {
+    "Sarah (kadın)": "EXAVITQu4vr4xnSDxMaL",
+    "George (erkek)": "JBFqnCBsd6RMkjVDRZzb",
+}
+EMEL = "Emel (Microsoft, bedava)"
+VARSAYILAN_SES = next(iter(ELEVEN_SESLER)) if ELEVEN_KEY else EMEL
 SES = "tr-TR-EmelNeural"
 GOOGLE_URL = "https://translate.google.com/translate_tts"
 MAX_UZUNLUK = 200  # Google (yedek) tek seferde en fazla 200 karakter okuyor
@@ -66,6 +75,8 @@ http: aiohttp.ClientSession
 
 okuma_kanali: dict[int, int] = {}  # sunucu id -> okunacak yazı kanalı id
 kuyruklar: dict[int, asyncio.Queue] = {}  # sunucu başına sırayla okumak için
+ses_secimi: dict[int, str] = {}  # sunucu id -> /ses ile seçilen ses adı
+eleven_kapali_kadar = 0.0  # kredi biterse ElevenLabs bir süre denenmesin
 
 
 def temizle(metin: str) -> str:
@@ -123,12 +134,22 @@ yedek = EdgeYedek()
 
 
 async def yedegi_sicak_tut():
+    tur = 0
     while True:
         await asyncio.sleep(2)
+        tur += 1
         if not client.voice_clients:
             yedek.birak()
-        elif yedek.bayat():
+            continue
+        if yedek.bayat():
             yedek.tazele()
+        if ELEVEN_KEY and tur % 5 == 0:
+            # ElevenLabs'a bağlantıyı açık tut; yoksa ilk mesajda bağlanmak ~1 sn ekliyor (ücretsiz istek)
+            try:
+                async with http.head("https://api.elevenlabs.io/"):
+                    pass
+            except Exception:
+                pass
 
 
 class ParcaKaynagi(miniaudio.StreamableSource):
@@ -210,25 +231,50 @@ async def edge_akit(metin: str, kaynak: ParcaKaynagi):
         await ws.close()
 
 
-async def google_mp3(metin: str) -> bytes:
+async def eleven_akit(metin: str, voice_id: str, kaynak: ParcaKaynagi):
+    global eleven_kapali_kadar
+    async with http.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
+        params={"output_format": "mp3_44100_128"},
+        headers={"xi-api-key": ELEVEN_KEY},
+        json={"text": metin, "model_id": ELEVEN_MODEL, "language_code": "tr"},
+    ) as r:
+        if r.status != 200:
+            hata = (await r.text())[:300]
+            if r.status in (401, 402, 429):  # kredi bitti / yetki yok / sınır: 10 dk Edge ile devam et
+                eleven_kapali_kadar = time.monotonic() + 600
+            raise RuntimeError(f"ElevenLabs {r.status}: {hata}")
+        async for parca in r.content.iter_any():
+            kaynak.ekle(parca)
+
+
+async def google_akit(metin: str, kaynak: ParcaKaynagi):
     params = {"ie": "UTF-8", "q": metin, "tl": "tr", "client": "tw-ob"}
     async with http.get(GOOGLE_URL, params=params) as r:
         r.raise_for_status()
-        return await r.read()
+        kaynak.ekle(await r.read())
 
 
-async def ses_uret(metin: str, kaynak: ParcaKaynagi):
+async def ses_uret(metin: str, ses: str, kaynak: ParcaKaynagi):
+    # Seçilen ses olmazsa sıradakine geç: ElevenLabs -> Emel (Microsoft) -> Google
+    denemeler = []
+    if ses in ELEVEN_SESLER and ELEVEN_KEY and time.monotonic() > eleven_kapali_kadar:
+        denemeler.append(("ElevenLabs", eleven_akit(metin, ELEVEN_SESLER[ses], kaynak)))
+    denemeler += [("Edge", edge_akit(metin, kaynak)), ("Google", google_akit(metin, kaynak))]
     try:
-        await asyncio.wait_for(edge_akit(metin, kaynak), 10)
-    except Exception as e:
-        if kaynak.geldi:
-            print(f"Edge yarıda kesildi: {e!r}")
-        else:
-            print(f"Edge olmadı, Google'a geçiliyor: {e!r}")
+        for i, (ad, deneme) in enumerate(denemeler):
             try:
-                kaynak.ekle(await google_mp3(metin))
-            except Exception as e2:
-                print(f"Google da olmadı: {e2!r}")
+                await asyncio.wait_for(deneme, 10)
+                if kaynak.geldi:
+                    break
+                raise RuntimeError("ses gelmedi")
+            except Exception as e:
+                if kaynak.geldi:
+                    print(f"{ad} yarıda kesildi: {e!r}")
+                    break
+                print(f"{ad} olmadı, sıradakine geçiliyor: {e!r}")
+        for _, kalan in denemeler[i + 1 :]:
+            kalan.close()  # başlatılmayan denemeler "never awaited" uyarısı vermesin
     finally:
         kaynak.ekle(None)
 
@@ -239,7 +285,7 @@ def seslendir(guild: discord.Guild, metin: str):
         return
     # Ses hemen üretilmeye başlar (önceki mesaj çalarken bile), çalma sırası korunur
     kaynak = ParcaKaynagi()
-    asyncio.create_task(ses_uret(metin, kaynak))
+    asyncio.create_task(ses_uret(metin, ses_secimi.get(guild.id, VARSAYILAN_SES), kaynak))
     if guild.id not in kuyruklar:
         kuyruklar[guild.id] = asyncio.Queue()
         asyncio.create_task(oynatici(guild, kuyruklar[guild.id]))
@@ -304,6 +350,15 @@ async def git(interaction: discord.Interaction):
     await vc.disconnect()
     okuma_kanali.pop(interaction.guild_id, None)
     await interaction.response.send_message("Görüşürüz 👋")
+
+
+@tree.command(name="ses", description="Okuma sesini değiştirir")
+@app_commands.choices(ad=[app_commands.Choice(name=ad, value=ad) for ad in [*ELEVEN_SESLER, EMEL]])
+async def ses(interaction: discord.Interaction, ad: app_commands.Choice[str]):
+    if ad.value in ELEVEN_SESLER and not ELEVEN_KEY:
+        return await interaction.response.send_message("ElevenLabs anahtarı tanımlı değil.", ephemeral=True)
+    ses_secimi[interaction.guild_id] = ad.value
+    await interaction.response.send_message(f"Ses değişti: **{ad.value}**")
 
 
 @client.event

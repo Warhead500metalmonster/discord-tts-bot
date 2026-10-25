@@ -2,7 +2,9 @@
 
 Ses kanalına gelip, çağrıldığı yazı kanalına yazılan mesajları Türkçe sesli okuyan Discord botu.
 
-- Microsoft Edge'in doğal **Emel** sesi kullanılır; Edge cevap vermezse Google sesine geçer.
+- `ELEVENLABS_API_KEY` tanımlıysa **ElevenLabs** sesleriyle (Flash v2.5, Türkçe) okur; değilse Microsoft Edge'in **Emel** sesiyle.
+- Seçilen ses olmazsa (kredi biterse vs.) sırayla Emel'e, o da olmazsa Google sesine geçer.
+- ElevenLabs sesleri `bot.py` içindeki `ELEVEN_SESLER` listesinden gelir; yeni ses için oraya `"Ad": "voice_id"` ekle.
 - Yazılan mesaj ~0,3 saniyede okunmaya başlar (bağlantı önceden açık tutulur, ses parça parça çalınır).
 - Linkler "link" diye, özel emojiler adıyla okunur. En fazla 200 karakter okunur.
 - Kanalda kimse kalmayınca bot kendiliğinden çıkar.
@@ -13,6 +15,7 @@ Ses kanalına gelip, çağrıldığı yazı kanalına yazılan mesajları Türk�
 |---|---|
 | `/gel` | Bulunduğun ses kanalına gelir, komutu yazdığın kanala yazılanları okur |
 | `/git` | Ses kanalından çıkar |
+| `/ses` | Okuma sesini değiştirir |
 
 ## Kurulum (Windows)
 

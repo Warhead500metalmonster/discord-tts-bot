@@ -83,7 +83,7 @@ eleven_sira = asyncio.Semaphore(ELEVEN_AYNI_ANDA)
 
 
 def temizle(metin: str) -> str:
-    metin = re.sub(r"https?://\S+", "link", metin)
+    metin = re.sub(r"https?://\S+", "link geldi", metin)
     metin = re.sub(r"<a?:(\w+):\d+>", r"\1", metin)  # özel emojiler -> adı
     return kirp(metin.strip(), MAX_UZUNLUK)
 
@@ -387,7 +387,10 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
     if okuma_kanali.get(message.guild.id) == message.channel.id and message.guild.voice_client:
-        seslendir(message.guild, message.clean_content)
+        metin = message.clean_content
+        if message.attachments:  # resim, video, ses, belge...
+            metin = f"{metin} dosya geldi"
+        seslendir(message.guild, metin)
 
 
 @client.event

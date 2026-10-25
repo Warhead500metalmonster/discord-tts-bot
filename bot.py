@@ -56,9 +56,7 @@ YEDEK_OMRU = 20  # Microsoft boşta bekleyen bağlantıyı 25-60 sn arasında ka
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 KARSILAMA = "Selam, ben kişisel asistanınız. Bugün size nasıl yardımcı olabilirim?"
 # Bu kişiler ne yazarsa yazsın mesajları yerine bu cümle okunur (kullanıcı id -> cümle). Kaldırmak için satırı sil.
-SABIT_CUMLELER = {
-    616265794933882960: "ben end mgs ben bir malım",
-}
+SABIT_CUMLELER = {}
 EDGE_AYAR = (
     "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
     '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false",'

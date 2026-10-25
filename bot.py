@@ -35,7 +35,7 @@ load_dotenv(KLASOR / ".env")
 TOKEN = os.getenv("DISCORD_TOKEN")
 ELEVEN_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVEN_MODEL = "eleven_flash_v2_5"  # en hızlısı (~0.3 sn), karakter başına yarım kredi
-# /ses komutunda çıkan ElevenLabs sesleri: ad -> voice_id. Türkçe ses eklemek için buraya satır ekle.
+# /voice komutunda çıkan ElevenLabs sesleri: ad -> voice_id. Türkçe ses eklemek için buraya satır ekle.
 ELEVEN_SESLER = {
     "Sarah (kadın)": "EXAVITQu4vr4xnSDxMaL",
     "George (erkek)": "JBFqnCBsd6RMkjVDRZzb",
@@ -77,7 +77,7 @@ http: aiohttp.ClientSession
 
 okuma_kanali: dict[int, int] = {}  # sunucu id -> okunacak yazı kanalı id
 kuyruklar: dict[int, asyncio.Queue] = {}  # sunucu başına sırayla okumak için
-ses_secimi: dict[int, str] = {}  # sunucu id -> /ses ile seçilen ses adı
+ses_secimi: dict[int, str] = {}  # sunucu id -> /voice ile seçilen ses adı
 eleven_kapali_kadar = 0.0  # kredi biterse ElevenLabs bir süre denenmesin
 eleven_sira = asyncio.Semaphore(ELEVEN_AYNI_ANDA)
 
@@ -340,7 +340,7 @@ async def on_ready():
     print(f"{client.user} olarak giriş yapıldı.")
 
 
-@tree.command(name="gel", description="Bulunduğun ses kanalına gelir, bu kanaldaki mesajları okur")
+@tree.command(name="join", description="Bulunduğun ses kanalına gelir, bu kanaldaki mesajları okur")
 async def gel(interaction: discord.Interaction):
     if not interaction.user.voice or not interaction.user.voice.channel:
         return await interaction.response.send_message("Önce bir ses kanalına gir.", ephemeral=True)
@@ -363,7 +363,7 @@ async def gel(interaction: discord.Interaction):
     seslendir(interaction.guild, KARSILAMA)
 
 
-@tree.command(name="git", description="Ses kanalından çıkar")
+@tree.command(name="leave", description="Ses kanalından çıkar")
 async def git(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if not vc:
@@ -373,7 +373,7 @@ async def git(interaction: discord.Interaction):
     await interaction.response.send_message("Görüşürüz 👋")
 
 
-@tree.command(name="ses", description="Okuma sesini değiştirir")
+@tree.command(name="voice", description="Okuma sesini değiştirir")
 @app_commands.choices(ad=[app_commands.Choice(name=ad, value=ad) for ad in [*ELEVEN_SESLER, EMEL]])
 async def ses(interaction: discord.Interaction, ad: app_commands.Choice[str]):
     if ad.value in ELEVEN_SESLER and not ELEVEN_KEY:

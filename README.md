@@ -13,9 +13,9 @@ Ses kanalına gelip, çağrıldığı yazı kanalına yazılan mesajları Türk�
 
 | Komut | Ne yapar |
 |---|---|
-| `/gel` | Bulunduğun ses kanalına gelir, komutu yazdığın kanala yazılanları okur |
-| `/git` | Ses kanalından çıkar |
-| `/ses` | Okuma sesini değiştirir |
+| `/join` | Bulunduğun ses kanalına gelir, komutu yazdığın kanala yazılanları okur |
+| `/leave` | Ses kanalından çıkar |
+| `/voice` | Okuma sesini değiştirir |
 
 ## Kurulum (Windows)
 

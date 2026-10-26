@@ -63,6 +63,13 @@ EMOJI = re.compile(
 YEDEK_OMRU = 20  # Microsoft boşta bekleyen bağlantıyı 25-60 sn arasında kapatıyor
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 KARSILAMA = "Selam, ben kişisel asistanınız. Bugün size nasıl yardımcı olabilirim?"
+# Botu sadece bu kişiler kullanabilir: komutları sadece onlar çalıştırır, sadece onların mesajları okunur
+IZINLI_KULLANICILAR = {
+    693134279894368356,
+    616265794933882960,
+    1100114778615189646,
+    622846242195636243,
+}
 # Bu kişiler ne yazarsa yazsın mesajları yerine bu cümle okunur (kullanıcı id -> cümle). Kaldırmak için satırı sil.
 SABIT_CUMLELER = {
     508269383282327552: "ben berke ben bir malım konuşmayı bilmiyorum",
@@ -89,7 +96,17 @@ intents.message_content = bool(TOKEN) and mesaj_izni_acik_mi()
 if not intents.message_content:
     print("UYARI: Message Content Intent kapalı, yazılanları okuyamam. Portal'dan açıp kaydet, botu yeniden başlat.")
 client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+
+
+class KomutAgaci(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id in IZINLI_KULLANICILAR:
+            return True
+        await interaction.response.send_message("Bu botu kullanma iznin yok.", ephemeral=True)
+        return False
+
+
+tree = KomutAgaci(client)
 http: aiohttp.ClientSession
 
 okuma_kanali: dict[int, int] = {}  # sunucu id -> okunacak yazı kanalı id
@@ -452,7 +469,7 @@ async def skip(interaction: discord.Interaction):
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
+    if message.author.bot or not message.guild or message.author.id not in IZINLI_KULLANICILAR:
         return
     vc = message.guild.voice_client
     if okuma_kanali.get(message.guild.id) == message.channel.id and vc:

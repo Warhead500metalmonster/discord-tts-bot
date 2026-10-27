@@ -63,13 +63,8 @@ EMOJI = re.compile(
 YEDEK_OMRU = 20  # Microsoft boşta bekleyen bağlantıyı 25-60 sn arasında kapatıyor
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 KARSILAMA = "Selam, ben kişisel asistanınız. Bugün size nasıl yardımcı olabilirim?"
-# Botu sadece bu kişiler kullanabilir: komutları sadece onlar çalıştırır, sadece onların mesajları okunur
-IZINLI_KULLANICILAR = {
-    693134279894368356,
-    616265794933882960,
-    1100114778615189646,
-    622846242195636243,
-}
+# Admin: /block ve /unblock ile kimin botu kullanamayacağını seçer. Varsayılan olarak herkes kullanabilir.
+ADMIN_ID = 537530866314903552
 # Bu kişiler ne yazarsa yazsın mesajları yerine bu cümle okunur (kullanıcı id -> cümle). Kaldırmak için satırı sil.
 SABIT_CUMLELER = {
     508269383282327552: "ben berke ben bir malım konuşmayı bilmiyorum",
@@ -100,7 +95,7 @@ client = discord.Client(intents=intents)
 
 class KomutAgaci(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id in IZINLI_KULLANICILAR:
+        if interaction.user.id not in engelliler:
             return True
         await interaction.response.send_message("Bu botu kullanma iznin yok.", ephemeral=True)
         return False
@@ -118,6 +113,11 @@ try:  # kullanıcı id -> /myvoice ile seçtiği ses; bot yeniden başlasa da ka
     kisi_sesleri: dict[int, str] = {int(k): v for k, v in json.loads(KISI_SESLERI_DOSYASI.read_text("utf-8")).items()}
 except (OSError, ValueError):
     kisi_sesleri = {}
+ENGELLILER_DOSYASI = KLASOR / "engelliler.json"
+try:  # admin'in /block ile engellediği kullanıcı id'leri; komut çalıştıramaz, mesajları okunmaz
+    engelliler: set[int] = set(json.loads(ENGELLILER_DOSYASI.read_text("utf-8")))
+except (OSError, ValueError):
+    engelliler = set()
 eleven_kapali_kadar = 0.0  # kredi biterse ElevenLabs bir süre denenmesin
 eleven_sira = asyncio.Semaphore(ELEVEN_AYNI_ANDA)
 
@@ -458,6 +458,48 @@ async def mode(interaction: discord.Interaction, ad: app_commands.Choice[str]):
     await interaction.response.send_message(f"Mod değişti: **{ad.value}**")
 
 
+def engellileri_kaydet():
+    try:
+        ENGELLILER_DOSYASI.write_text(json.dumps(sorted(engelliler)), "utf-8")
+    except OSError as e:
+        print(f"Engelliler kaydedilemedi: {e!r}")
+
+
+async def admin_mi(interaction: discord.Interaction) -> bool:
+    if interaction.user.id == ADMIN_ID:
+        return True
+    await interaction.response.send_message("Bu komutu sadece admin kullanabilir.", ephemeral=True)
+    return False
+
+
+@tree.command(name="block", description="(Admin) Bu kişi botu kullanamasın, mesajları okunmasın")
+async def block(interaction: discord.Interaction, kisi: discord.User):
+    if not await admin_mi(interaction):
+        return
+    if kisi.id == ADMIN_ID:
+        return await interaction.response.send_message("Kendini engelleyemezsin.", ephemeral=True)
+    engelliler.add(kisi.id)
+    engellileri_kaydet()
+    await interaction.response.send_message(f"{kisi.mention} artık botu kullanamaz.", ephemeral=True)
+
+
+@tree.command(name="unblock", description="(Admin) Engeli kaldırır, bu kişi botu tekrar kullanabilir")
+async def unblock(interaction: discord.Interaction, kisi: discord.User):
+    if not await admin_mi(interaction):
+        return
+    engelliler.discard(kisi.id)
+    engellileri_kaydet()
+    await interaction.response.send_message(f"{kisi.mention} botu tekrar kullanabilir.", ephemeral=True)
+
+
+@tree.command(name="blocklist", description="(Admin) Engellenen kişileri listeler")
+async def blocklist(interaction: discord.Interaction):
+    if not await admin_mi(interaction):
+        return
+    liste = "\n".join(f"<@{uid}>" for uid in sorted(engelliler)) or "Engellenen kimse yok."
+    await interaction.response.send_message(liste, ephemeral=True)
+
+
 @tree.command(name="skip", description="Şu an okunan mesajı keser, sıradakine geçer")
 async def skip(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -469,7 +511,7 @@ async def skip(interaction: discord.Interaction):
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild or message.author.id not in IZINLI_KULLANICILAR:
+    if message.author.bot or not message.guild or message.author.id in engelliler:
         return
     vc = message.guild.voice_client
     if okuma_kanali.get(message.guild.id) == message.channel.id and vc:

@@ -20,6 +20,9 @@ Ses kanalına gelip, çağrıldığı yazı kanalına yazılan mesajları Türk�
 | `/voice` | Okuma sesini değiştirir (sunucunun sesi) |
 | `/myvoice` | Senin mesajlarının hangi sesle okunacağını seçer; bot yeniden başlasa da hatırlanır |
 | `/mode` | ElevenLabs modunu seçer: Duygulu (v3, varsayılan) ya da Hızlı (Flash) |
+| `/block` | (Admin) Seçilen kişi botu kullanamaz, mesajları okunmaz |
+| `/unblock` | (Admin) Engeli kaldırır |
+| `/blocklist` | (Admin) Engellenenleri listeler |
 | `/skip` | Şu an okunan mesajı keser, sıradakine geçer |
 
 ## Kurulum (Windows)

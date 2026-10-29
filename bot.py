@@ -66,9 +66,7 @@ KARSILAMA = "Selam, ben kişisel asistanınız. Bugün size nasıl yardımcı ol
 # Admin: /block ve /unblock ile kimin botu kullanamayacağını seçer. Varsayılan olarak herkes kullanabilir.
 ADMIN_ID = 537530866314903552
 # Bu kişiler ne yazarsa yazsın mesajları yerine bu cümle okunur (kullanıcı id -> cümle). Kaldırmak için satırı sil.
-SABIT_CUMLELER = {
-    508269383282327552: "ben berke ben bir malım konuşmayı bilmiyorum",
-}
+SABIT_CUMLELER = {}
 EDGE_AYAR = (
     "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"
     '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false",'
